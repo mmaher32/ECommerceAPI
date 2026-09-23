@@ -1,96 +1,213 @@
 # ECommerce API
 
-A production-oriented e-commerce backend built with **.NET 10** and ASP.NET Core, organized as a Clean Architecture solution. It exposes a versioned REST API (`/api/v1`) for catalog browsing, basket management, ordering, and user authentication.
+![.NET](https://img.shields.io/badge/.NET-10-512BD4?logo=dotnet&logoColor=white)
+![PostgreSQL](https://img.shields.io/badge/PostgreSQL-17-4169E1?logo=postgresql&logoColor=white)
+![Redis](https://img.shields.io/badge/Redis-cache-DC382D?logo=redis&logoColor=white)
+![Docker](https://img.shields.io/badge/Docker-ready-2496ED?logo=docker&logoColor=white)
 
-## Tech stack
+A backend for an online store, written in **ASP.NET Core (.NET 10)** using Clean Architecture. It covers the parts every shop needs: a product catalog, shopping baskets, orders, and user accounts with JWT authentication.
 
-| Layer | Technology |
-| --- | --- |
-| Web | ASP.NET Core minimal APIs, API versioning, Swagger (Dev only) |
-| Application | MediatR, FluentValidation, Mapster, Ardalis.Specification |
-| Data | Entity Framework Core 10 + Npgsql (PostgreSQL 17) |
-| Identity | ASP.NET Identity + JWT Bearer (HS256) with refresh-token rotation |
-| Caching | ASP.NET Core Output Cache + Microsoft.Extensions.Caching.Hybrid backed by Redis |
-| Infrastructure | Docker Compose (PostgreSQL + Redis), Dockerfile for the API |
+I built it to be deployable, not just a demo. Configuration is validated at startup, secrets never live in the repo, prices are always calculated on the server, and the whole thing runs in Docker.
 
-## Project layout
+---
 
-```
-ECommerce.API/            Presentation layer: endpoints, middleware, DI composition
-ECommerce.UseCases/       Application layer: commands/queries, validation, DTOs
-ECommerce.Domain/         Domain layer: entities, constants, repository contracts
-ECommerce.Infrastructure/ Persistence (EF Core), Identity, caching, seeding, read services
-```
+## Table of contents
 
-Cross-cutting rules that keep the codebase honest:
+- [Features](#features)
+- [Tech stack](#tech-stack)
+- [Architecture](#architecture)
+- [Getting started](#getting-started)
+- [Configuration](#configuration)
+- [API reference](#api-reference)
+- [Deployment](#deployment)
+- [Design decisions](#design-decisions)
+- [Roadmap](#roadmap)
 
-- **No N+1 queries** — all navigation loads are SQL-side projections (no lazy loading).
-- **Soft deletes** — every store entity inherits `BaseEntity` and is soft-deleted through a global query filter.
-- **Fail-fast configuration** — `Jwt` and basket cache options are validated at startup; a missing Production `Redis` connection string throws rather than silently degrading.
-- **Secrets stay out of git** — `.env` is ignored; only `.env.example` is tracked. Real values arrive via environment variables or user secrets.
+---
 
 ## Features
 
-- Browse products with paging, search, filtering by brand/type, and sorting
-- Anonymous baskets (via `X-Buyer-Id`) upgraded to authenticated baskets on login
-- Orders priced server-side from the catalog — prices never come from the client
-- JWT auth (15-minute access tokens) with rotating, hashed refresh tokens and reuse detection
-- Password change, forgot-password, and reset flows
-- Output-cached product search and delivery-method endpoints
+**Catalog**
+- Product listing with paging, search, brand/type filters, and sorting
+- Brands, product types, and delivery methods
+- Product search and delivery methods are served from the output cache
 
-## Getting started (development)
+**Baskets**
+- Guests can shop without an account. The basket is tracked by an `X-Buyer-Id` header.
+- The guest basket moves over to the user's account when they log in
+- Baskets are stored in Redis through `HybridCache`
 
-Prerequisites: .NET 10 SDK, Docker (for PostgreSQL + Redis).
+**Orders**
+- Orders are created from the basket, and every price is read again from the catalog, so the client can't set its own prices
+- Users can view their order history or a single order
 
-1. **Start the infrastructure** — copy `.env.example` to `.env`, fill in values, then run:
+**Identity**
+- Register, log in, log out, and view the current user
+- Short-lived access tokens (15 minutes) and refresh tokens that rotate on every use. Refresh tokens are stored hashed, and a reused token is detected.
+- Change password, forgot password, and reset password
+- Seeded roles: `SuperAdmin`, `Admin`, `User`
 
-   ```sh
-   docker compose up -d
-   ```
+---
 
-2. **Supply secrets** — the app reads the database connection string (`ConnectionStrings:DefaultConnection`), `Jwt:*`, and the Super Admin seed (`Seed:SuperAdmin`) from appsettings/user-secrets/environment. With the `ECommerce.API` project selected:
+## Tech stack
 
-   ```sh
-   dotnet user-secrets set "ConnectionStrings:DefaultConnection" "Host=127.0.0.1;Port=5432;Database=ECommerceDb;Username=postgres;Password=change_me"
-   dotnet user-secrets set "Jwt:Secret" "a-random-string-at-least-32-bytes-long"
-   dotnet user-secrets set "Jwt:Issuer" "http://localhost:5254"
-   dotnet user-secrets set "Jwt:Audience" "http://localhost:5254"
-   ```
+| Concern | Technology |
+| --- | --- |
+| Web | ASP.NET Core Minimal APIs, Asp.Versioning, Swagger (Development only) |
+| Application | MediatR (CQRS), FluentValidation, Mapster, Ardalis.Specification |
+| Persistence | Entity Framework Core 10 + Npgsql (PostgreSQL 17) |
+| Identity | ASP.NET Core Identity, JWT Bearer (HS256) |
+| Caching | Output Cache, `Microsoft.Extensions.Caching.Hybrid` on Redis |
+| Tooling | Docker, Docker Compose |
 
-3. **Run**:
+---
 
-   ```sh
-   dotnet run --project ECommerce.API
-   ```
+## Architecture
 
-   In Development the app applies EF migrations, seeds the catalog (brands, types, products, delivery methods, roles) automatically, and exposes Swagger at `http://localhost:5254/swagger`.
+The solution has four projects. Each one depends only on the layers inside it:
 
-## Configuration reference
+```
+┌──────────────────────────────────────────────┐
+│  ECommerce.API             (Presentation)    │  endpoints, middleware, filters, DI root
+├──────────────────────────────────────────────┤
+│  ECommerce.Infrastructure  (Infrastructure)  │  EF Core, Identity, JWT, caching, seeding
+├──────────────────────────────────────────────┤
+│  ECommerce.UseCases        (Application)     │  commands, queries, validators, DTOs
+├──────────────────────────────────────────────┤
+│  ECommerce.Domain          (Domain)          │  entities, errors, Result<T>, contracts
+└──────────────────────────────────────────────┘
+```
 
-All settings can be overridden with environment variables (double underscores `__` for nesting).
+- **Domain** has no framework dependencies. It holds the entities, the `Result`/`Error` types used for expected failures, and the repository interfaces.
+- **UseCases** contains one MediatR handler for each operation. A pipeline behavior runs the FluentValidation checks before any handler.
+- **Infrastructure** implements the repository and unit-of-work contracts. Reads go through dedicated query services that return data already projected into the response shape.
+- **API** is kept thin: endpoints map HTTP to commands and queries, and every response uses the same `ApiResponse<T>` envelope. A global exception middleware handles unexpected errors.
 
-| Variable | Required | Notes |
+---
+
+## Getting started
+
+### Prerequisites
+
+- [.NET 10 SDK](https://dotnet.microsoft.com/download)
+- [Docker](https://www.docker.com/) to run PostgreSQL and Redis
+
+### 1. Clone the repo and start the infrastructure
+
+```sh
+git clone https://github.com/Muhammed-maher32/ECommerceAPI.git
+cd ECommerceAPI
+cp .env.example .env        # then fill in the values
+docker compose up -d
+```
+
+### 2. Set the development secrets
+
+```sh
+cd ECommerce.API
+dotnet user-secrets set "ConnectionStrings:DefaultConnection" "Host=127.0.0.1;Port=5432;Database=ECommerceDb;Username=postgres;Password=change_me"
+dotnet user-secrets set "Jwt:Secret"   "a-random-string-at-least-32-bytes-long"
+dotnet user-secrets set "Jwt:Issuer"   "http://localhost:5254"
+dotnet user-secrets set "Jwt:Audience" "http://localhost:5254"
+```
+
+### 3. Run the API
+
+```sh
+dotnet run --project ECommerce.API
+```
+
+When the API runs in Development, it applies migrations and seeds brands, types, products, delivery methods, and roles on its own. Swagger is available at **http://localhost:5254/swagger**.
+
+---
+
+## Configuration
+
+Every setting can be overridden with an environment variable. Use `__` for nested keys.
+
+| Key | Required | Description |
+| --- | :---: | --- |
+| `ConnectionStrings__DefaultConnection` | ✅ | PostgreSQL connection string |
+| `ConnectionStrings__Redis` | Prod | Required in Production. In Development, the API falls back to an in-memory cache when it's missing. |
+| `Jwt__Secret` | ✅ | Signing key, at least 32 bytes |
+| `Jwt__Issuer` / `Jwt__Audience` | ✅ | Checked against every token |
+| `Jwt__AccessTokenExpirationMinutes` | | Default `15` |
+| `Jwt__RefreshTokenExpirationDays` | | Default `7` |
+| `Database__MigrateOnStartup` | | `true` runs migrations and seeding at startup |
+| `Seed__SuperAdmin__Email` / `Password` / `DisplayName` | | Creates the Super Admin account, or updates it if it already exists |
+
+---
+
+## API reference
+
+All routes are versioned under `/api/v1`. 🔒 means the route requires a bearer token.
+
+### Users — `/api/v1/users`
+
+| Method | Route | Description |
 | --- | --- | --- |
-| `ConnectionStrings__DefaultConnection` | Yes | Npgsql connection string for the single shared database |
-| `ConnectionStrings__Redis` | Production | Missing in Production fails startup; optional in Development (falls back to in-memory HybridCache) |
-| `Jwt__Secret` | Yes | Must be at least 32 bytes |
-| `Jwt__Issuer` / `Jwt__Audience` | Yes | Validated against the token at login |
-| `Jwt__AccessTokenExpirationMinutes` | No | Default 15 |
-| `Jwt__RefreshTokenExpirationDays` | No | Default 7 |
-| `Database__MigrateOnStartup` | No | `true` applies migrations + idempotent seeding on boot (Production bootstrap; leave off afterwards) |
-| `Seed__SuperAdmin__Email/Password/DisplayName` | No | Creates/resyncs the Super Admin account during seeding |
+| `POST` | `/register` | Create an account |
+| `POST` | `/login` | Get an access token and a refresh token |
+| `POST` | `/refresh` | Exchange a refresh token for a new token pair |
+| `POST` | `/logout` 🔒 | Revoke the current refresh token |
+| `GET` | `/me` 🔒 | Get the current user's profile |
+| `POST` | `/change-password` 🔒 | Change the password |
+| `POST` | `/forgot-password` | Request a password-reset token |
+| `POST` | `/reset-password` | Reset the password with a token |
 
-## Production deployment
+### Catalog
 
-The API ships as a Docker image (`ECommerce.API/Dockerfile`, multi-stage, non-root default user) that exposes port **8080**:
+| Method | Route | Description |
+| --- | --- | --- |
+| `GET` | `/products/paged` | Search, filter, sort, and page products |
+| `GET` | `/products/{id}` | Get a single product |
+| `GET` | `/brands` | List all brands |
+| `GET` | `/types` | List all product types |
+| `GET` | `/deliverymethods` | List delivery options |
+
+### Basket — `/api/v1/baskets`
+
+Pass `X-Buyer-Id` as a guest, or send a bearer token when logged in.
+
+| Method | Route | Description |
+| --- | --- | --- |
+| `GET` | `/` | Get the current basket |
+| `POST` | `/items` | Add an item |
+| `PUT` | `/items/{productId}` | Change an item's quantity |
+| `DELETE` | `/items/{productId}` | Remove an item |
+| `DELETE` | `/` | Clear the basket |
+
+### Orders — `/api/v1/orders` 🔒
+
+| Method | Route | Description |
+| --- | --- | --- |
+| `POST` | `/` | Create an order from the basket |
+| `GET` | `/` | List the user's orders |
+| `GET` | `/{id}` | Get a single order |
+
+Every successful response uses the same envelope. `pagination` is included only on paged endpoints.
+
+```json
+{
+  "success": true,
+  "message": null,
+  "data": { },
+  "meta": {
+    "traceId": "00-4bf92f35...",
+    "pagination": { }
+  }
+}
+```
+
+---
+
+## Deployment
+
+The API ships with a multi-stage `Dockerfile` that runs as a non-root user and exposes port **8080**.
 
 ```sh
 docker build -f ECommerce.API/Dockerfile -t ecommerce-api .
-```
 
-Run it with PostgreSQL and Redis, passing the required configuration:
-
-```sh
 docker run -d -p 8080:8080 \
   -e ASPNETCORE_ENVIRONMENT=Production \
   -e ConnectionStrings__DefaultConnection="Host=postgres;Port=5432;Database=ECommerceDb;Username=postgres;Password=change_me" \
@@ -102,30 +219,35 @@ docker run -d -p 8080:8080 \
   ecommerce-api
 ```
 
-Notes:
+Before you deploy, note the following:
 
-- Set `Database__MigrateOnStartup=true` for the **first** deploy so the schema, seed data, and roles are created. Turn it off afterwards — migrations are non-destructive, but the Super Admin password is re-synchronised from configuration on every seed run.
-- Swagger is **not** exposed in Production.
-- Baskets live in Redis only; do not run Production without Redis. Put a reverse proxy (e.g. Caddy/Traefik/nginx) in front to terminate TLS.
+- Enable `Database__MigrateOnStartup` for the **first** deploy only. Each seed run resets the Super Admin password to the value in configuration.
+- Swagger is turned off in Production.
+- Baskets are stored only in Redis, so Production won't start without it.
+- Put a reverse proxy such as nginx, Caddy, or Traefik in front of the API to terminate TLS.
 
-## API overview
+---
 
-All routes live under `/api/v{version}` (currently `1.0`) and respond in a consistent `ApiResponse<T>` envelope:
+## Design decisions
 
-- `POST /api/v1/users/register, /login, /refresh, /logout, /forgot-password, /reset-password, /change-password`
-- `GET  /api/v1/users/me`
-- `GET  /api/v1/products`, `GET /api/v1/products/{id}`, `GET /api/v1/products/paged`
-- `GET  /api/v1/brands`, `GET /api/v1/types`, `GET /api/v1/delivery-methods`
-- `GET/POST/DELETE /api/v1/baskets`
-- `GET/POST /api/v1/orders`
+- **No N+1 queries.** Lazy loading is off. Related data is loaded with SQL projections.
+- **Soft deletes.** Every store entity inherits from `BaseEntity`, and a global query filter hides deleted rows.
+- **Results instead of exceptions.** Expected failures such as "product not found" or "basket empty" return a `Result` with a typed `Error`. The API turns these into the right HTTP status codes.
+- **Fail fast.** JWT and cache options are validated when the app starts, so a bad configuration fails at boot instead of on the first request.
+- **Secrets stay out of git.** Only `.env.example` is committed.
 
-Roles (`SuperAdmin`, `Admin`, `User`) exist in the seed data; endpoints currently only require an authenticated user.
+---
 
 ## Roadmap
 
-Planned work to close remaining production gaps:
+- [ ] SMTP email service for account confirmation and password-reset emails
+- [ ] Rate limiting on authentication endpoints
+- [ ] `/health/live` and `/health/ready` endpoints, plus a Docker `HEALTHCHECK`
+- [ ] OpenTelemetry metrics with a Grafana dashboard
+- [ ] Admin endpoints for catalog management, using the seeded roles
 
-- **Email service** — SMTP provider integration to send confirmation, password-reset, and transactional emails (the identity token providers are already in place).
-- **Rate limiting** — throttle authentication endpoints to blunt brute-force attempts against `/login`, `/register`, and `/refresh`.
-- **Health checks** — expose `/health/live` and `/health/ready` (database + Redis) and add a Docker `HEALTHCHECK` to the API image.
-- **Grafana** — ship metrics (OpenTelemetry) with a Grafana dashboard for requests, latency, and infrastructure monitoring.
+---
+
+## Author
+
+**Muhammed Maher** — [GitHub](https://github.com/Muhammed-maher32)
