@@ -95,7 +95,7 @@ The solution has four projects. Each one depends only on the layers inside it:
 ### 1. Clone the repo and start the infrastructure
 
 ```sh
-git clone https://github.com/Muhammed-maher32/ECommerceAPI.git
+git clone https://github.com/mmaher32/ECommerceAPI.git
 cd ECommerceAPI
 cp .env.example .env        # then fill in the values
 docker compose up -d
@@ -250,4 +250,4 @@ Before you deploy, note the following:
 
 ## Author
 
-**Muhammed Maher** — [GitHub](https://github.com/Muhammed-maher32)
+**Muhammed Maher** — [GitHub](https://github.com/mmaher32)
