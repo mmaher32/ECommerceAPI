@@ -28,9 +28,11 @@ public class ForgotPasswordCommandHandler(
             return Result.Success();
         }
 
-        // TODO: hand the token to the email service (P10). Until that exists this log is
-        // the only place the token is visible -- read it from the Development console.
-        logger.LogWarning(
+        // There is no email service, so this log is the only place the token is visible.
+        // Debug level on purpose: a reset token in production logs lets anyone with log
+        // access take over the account. appsettings.Development.json enables Debug for
+        // this class only, so it shows on the local console and nowhere else.
+        logger.LogDebug(
             "Password reset token for {Email}: {Token}", request.Email, tokenResult.Value);
 
         return Result.Success();

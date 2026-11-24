@@ -5,7 +5,8 @@ using System.Collections.Concurrent;
 
 namespace ECommerce.Infrastructure.Repositories;
 
-//why unit of work??? you tell me what repo u want, and i return it to you
+// One DbContext shared by every repository it hands out, so changes made through
+// several repositories are committed together by a single SaveChangesAsync.
 public class UnitOfWork(StoreDbContext dbContext) : IUnitOfWork
 {
     //type(product)=>Irepo<product>

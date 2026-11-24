@@ -10,6 +10,8 @@ A backend for an online store, written in **ASP.NET Core (.NET 10)** using Clean
 
 I built it to be deployable, not just a demo. Configuration is validated at startup, secrets never live in the repo, prices are always calculated on the server, and the whole thing runs in Docker.
 
+> **Status: complete.** This project is finished and no longer actively developed. The [possible extensions](#possible-extensions) section lists what a next iteration would add.
+
 ---
 
 ## Table of contents
@@ -24,7 +26,7 @@ I built it to be deployable, not just a demo. Configuration is validated at star
 - [Testing](#testing)
 - [Deployment](#deployment)
 - [Design decisions](#design-decisions)
-- [Roadmap](#roadmap)
+- [Possible extensions](#possible-extensions)
 
 ---
 
@@ -166,7 +168,7 @@ All routes are versioned under `/api/v1`. 🔒 means the route requires a bearer
 | `POST` | `/logout` 🔒 | Revoke the current refresh token |
 | `GET` | `/me` 🔒 | Get the current user's profile |
 | `POST` | `/change-password` 🔒 ⏱️ | Change the password |
-| `POST` | `/forgot-password` ⏱️ | Request a password-reset token |
+| `POST` | `/forgot-password` ⏱️ | Request a password-reset token. With no email service, the token is printed to the Development console only. |
 | `POST` | `/reset-password` ⏱️ | Reset the password with a token |
 
 ### Catalog
@@ -279,17 +281,17 @@ Before you deploy, note the following:
 
 ---
 
-## Roadmap
+## Possible extensions
 
-- [x] Rate limiting on authentication endpoints
-- [x] `/health/live` and `/health/ready` endpoints, plus a Docker `HEALTHCHECK`
-- [x] Admin endpoints for product management, using the seeded roles
-- [x] Unit tests and a CI pipeline
-- [ ] SMTP email service for account confirmation and password-reset emails. Right now the reset token is only logged.
-- [ ] Admin endpoints for brands, types, and delivery methods
-- [ ] Admin order management (shipping and delivery status) and a payment provider
-- [ ] Integration tests against a real PostgreSQL instance (Testcontainers)
-- [ ] OpenTelemetry metrics with a Grafana dashboard
+Not planned, but these are the natural next steps:
+
+- Integration tests against real PostgreSQL and Redis instances (Testcontainers + `WebApplicationFactory`)
+- An email service for account confirmation and password resets. Right now the reset token is only written to the Development console.
+- Admin endpoints for brands, types, and delivery methods
+- Admin order management. The `Order` entity already enforces the shipping, delivery, and cancellation transitions.
+- A payment provider wired to `Order.SetPaymentIntent` / `MarkAsPaid`
+- Forwarded-headers configuration for running behind a reverse proxy
+- Structured logging and OpenTelemetry metrics
 
 ---
 

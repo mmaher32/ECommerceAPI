@@ -9,10 +9,7 @@ public abstract class BaseEntity
 
     public void MarkAsDeleted()
     {
+        // UpdatedAt is stamped by AuditInterceptor when the change is saved.
         IsDeleted = true;
-        //UpdatedAt = DateTimeOffset.UtcNow; => set in interceptor
-
     }
-
-    //Created By id, updated By Id?? when authnicate + auth and add intersiptor
 }
