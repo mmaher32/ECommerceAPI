@@ -1,4 +1,7 @@
 <Solution>
+  <Folder Name="/tests/">
+    <Project Path="tests/ECommerce.UnitTests/ECommerce.UnitTests.csproj" />
+  </Folder>
   <Project Path="ECommerce.API/ECommerce.API.csproj" />
   <Project Path="ECommerce.Domain/ECommerce.Domain.csproj" />
   <Project Path="ECommerce.Infrastructure/ECommerce.Infrastructure.csproj" />

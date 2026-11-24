@@ -1,6 +1,9 @@
 using Asp.Versioning;
 using ECommerce.API;
 using ECommerce.API.Endpoints;
+using ECommerce.API.Health;
+using ECommerce.API.Security;
+using Microsoft.AspNetCore.Diagnostics.HealthChecks;
 using ECommerce.Infrastructure;
 using ECommerce.Infrastructure.Identity;
 using ECommerce.Infrastructure.Persistence.DbContexts;
@@ -20,7 +23,9 @@ builder.Services.AddOutputCache(options =>
     {
         // Every query-string field the spec reads has to vary the key, otherwise
         // two different searches or sorts collide on the same cached page.
+        // Tagged so catalog writes can evict every cached page at once.
         policy.Expire(TimeSpan.FromMinutes(1))
+        .Tag(OutputCacheTags.Products)
         .SetVaryByQuery(
             "pageNumber", "pageSize", "search",
             "brandId", "typeId", "sortBy", "sortDescending");
@@ -41,7 +46,23 @@ app.UseExceptionHandler();
 app.UseAuthentication();
 app.UseAuthorization();
 
+// After routing (implicit in minimal APIs) so endpoint-level policies resolve.
+app.UseRateLimiter();
+
 app.UseOutputCache();
+
+// Liveness: the process is up and serving requests. No dependency checks, so a
+// database outage does not get a healthy container restarted for nothing.
+app.MapHealthChecks("/health/live", new HealthCheckOptions
+{
+    Predicate = _ => false
+});
+
+// Readiness: PostgreSQL (and Redis when configured) are reachable.
+app.MapHealthChecks("/health/ready", new HealthCheckOptions
+{
+    Predicate = check => check.Tags.Contains(HealthCheckTags.Ready)
+});
 
 var apiVersionSet = app.NewApiVersionSet()
     .HasApiVersion(new ApiVersion(1, 0))

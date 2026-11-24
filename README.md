@@ -4,6 +4,7 @@
 ![PostgreSQL](https://img.shields.io/badge/PostgreSQL-17-4169E1?logo=postgresql&logoColor=white)
 ![Redis](https://img.shields.io/badge/Redis-cache-DC382D?logo=redis&logoColor=white)
 ![Docker](https://img.shields.io/badge/Docker-ready-2496ED?logo=docker&logoColor=white)
+[![CI](https://github.com/mmaher32/ECommerceAPI/actions/workflows/ci.yml/badge.svg)](https://github.com/mmaher32/ECommerceAPI/actions/workflows/ci.yml)
 
 A backend for an online store, written in **ASP.NET Core (.NET 10)** using Clean Architecture. It covers the parts every shop needs: a product catalog, shopping baskets, orders, and user accounts with JWT authentication.
 
@@ -19,6 +20,8 @@ I built it to be deployable, not just a demo. Configuration is validated at star
 - [Getting started](#getting-started)
 - [Configuration](#configuration)
 - [API reference](#api-reference)
+- [Health checks](#health-checks)
+- [Testing](#testing)
 - [Deployment](#deployment)
 - [Design decisions](#design-decisions)
 - [Roadmap](#roadmap)
@@ -31,6 +34,7 @@ I built it to be deployable, not just a demo. Configuration is validated at star
 - Product listing with paging, search, brand/type filters, and sorting
 - Brands, product types, and delivery methods
 - Product search and delivery methods are served from the output cache
+- Admins can create, update, and soft-delete products. Every write clears the cached product pages right away.
 
 **Baskets**
 - Guests can shop without an account. The basket is tracked by an `X-Buyer-Id` header.
@@ -45,7 +49,12 @@ I built it to be deployable, not just a demo. Configuration is validated at star
 - Register, log in, log out, and view the current user
 - Short-lived access tokens (15 minutes) and refresh tokens that rotate on every use. Refresh tokens are stored hashed, and a reused token is detected.
 - Change password, forgot password, and reset password
-- Seeded roles: `SuperAdmin`, `Admin`, `User`
+- Seeded roles: `SuperAdmin`, `Admin`, `User`. Catalog writes require `Admin` or `SuperAdmin`.
+- Login, register, refresh, and the password routes are rate limited per client IP
+
+**Operations**
+- `/health/live` and `/health/ready` endpoints, plus a Docker `HEALTHCHECK`
+- Unit tests and a GitHub Actions pipeline that builds, tests, and builds the Docker image
 
 ---
 
@@ -58,7 +67,9 @@ I built it to be deployable, not just a demo. Configuration is validated at star
 | Persistence | Entity Framework Core 10 + Npgsql (PostgreSQL 17) |
 | Identity | ASP.NET Core Identity, JWT Bearer (HS256) |
 | Caching | Output Cache, `Microsoft.Extensions.Caching.Hybrid` on Redis |
-| Tooling | Docker, Docker Compose |
+| Resilience | ASP.NET Core rate limiting, health checks |
+| Testing | xUnit, NSubstitute |
+| Tooling | Docker, Docker Compose, GitHub Actions |
 
 ---
 
@@ -81,6 +92,7 @@ The solution has four projects. Each one depends only on the layers inside it:
 - **Domain** has no framework dependencies. It holds the entities, the `Result`/`Error` types used for expected failures, and the repository interfaces.
 - **UseCases** contains one MediatR handler for each operation. A pipeline behavior runs the FluentValidation checks before any handler.
 - **Infrastructure** implements the repository and unit-of-work contracts. Reads go through dedicated query services that return data already projected into the response shape.
+- **tests/ECommerce.UnitTests** covers the domain rules, validators, the validation pipeline, and the catalog command handlers.
 - **API** is kept thin: endpoints map HTTP to commands and queries, and every response uses the same `ApiResponse<T>` envelope. A global exception middleware handles unexpected errors.
 
 ---
@@ -135,25 +147,27 @@ Every setting can be overridden with an environment variable. Use `__` for neste
 | `Jwt__RefreshTokenExpirationDays` | | Default `7` |
 | `Database__MigrateOnStartup` | | `true` runs migrations and seeding at startup |
 | `Seed__SuperAdmin__Email` / `Password` / `DisplayName` | | Creates the Super Admin account, or updates it if it already exists |
+| `RateLimiting__Auth__PermitLimit` | | Requests allowed per IP in each window on the auth routes. Default `10` |
+| `RateLimiting__Auth__WindowSeconds` | | Length of the window. Default `60` |
 
 ---
 
 ## API reference
 
-All routes are versioned under `/api/v1`. 🔒 means the route requires a bearer token.
+All routes are versioned under `/api/v1`. 🔒 means the route requires a bearer token. 🛡️ means it also requires the `Admin` or `SuperAdmin` role. ⏱️ means the route is rate limited.
 
 ### Users — `/api/v1/users`
 
 | Method | Route | Description |
 | --- | --- | --- |
-| `POST` | `/register` | Create an account |
-| `POST` | `/login` | Get an access token and a refresh token |
-| `POST` | `/refresh` | Exchange a refresh token for a new token pair |
+| `POST` | `/register` ⏱️ | Create an account |
+| `POST` | `/login` ⏱️ | Get an access token and a refresh token |
+| `POST` | `/refresh` ⏱️ | Exchange a refresh token for a new token pair |
 | `POST` | `/logout` 🔒 | Revoke the current refresh token |
 | `GET` | `/me` 🔒 | Get the current user's profile |
-| `POST` | `/change-password` 🔒 | Change the password |
-| `POST` | `/forgot-password` | Request a password-reset token |
-| `POST` | `/reset-password` | Reset the password with a token |
+| `POST` | `/change-password` 🔒 ⏱️ | Change the password |
+| `POST` | `/forgot-password` ⏱️ | Request a password-reset token |
+| `POST` | `/reset-password` ⏱️ | Reset the password with a token |
 
 ### Catalog
 
@@ -161,6 +175,9 @@ All routes are versioned under `/api/v1`. 🔒 means the route requires a bearer
 | --- | --- | --- |
 | `GET` | `/products/paged` | Search, filter, sort, and page products |
 | `GET` | `/products/{id}` | Get a single product |
+| `POST` | `/products` 🛡️ | Create a product |
+| `PUT` | `/products/{id}` 🛡️ | Update a product |
+| `DELETE` | `/products/{id}` 🛡️ | Soft-delete a product |
 | `GET` | `/brands` | List all brands |
 | `GET` | `/types` | List all product types |
 | `GET` | `/deliverymethods` | List delivery options |
@@ -201,9 +218,32 @@ Every successful response uses the same envelope. `pagination` is included only 
 
 ---
 
+## Health checks
+
+These routes are not versioned and don't require authentication.
+
+| Route | Checks | Use it for |
+| --- | --- | --- |
+| `/health/live` | Nothing. The process is up and answering requests. | Liveness probe. The Docker `HEALTHCHECK` uses this route. |
+| `/health/ready` | PostgreSQL, plus Redis when it's configured | Readiness probe or load balancer. Returns `503` until the dependencies are reachable. |
+
+Liveness doesn't check the database on purpose. If PostgreSQL goes down, the API container should keep running and not be restarted for something it can't fix.
+
+---
+
+## Testing
+
+```sh
+dotnet test ECommerce.API.slnx
+```
+
+The unit tests need no database or Redis. GitHub Actions runs them on every push and pull request to `master`, then builds the Docker image.
+
+---
+
 ## Deployment
 
-The API ships with a multi-stage `Dockerfile` that runs as a non-root user and exposes port **8080**.
+The API ships with a multi-stage `Dockerfile` that runs as the image's non-root `app` user, exposes port **8080**, and declares a `HEALTHCHECK` against `/health/live`.
 
 ```sh
 docker build -f ECommerce.API/Dockerfile -t ecommerce-api .
@@ -225,6 +265,7 @@ Before you deploy, note the following:
 - Swagger is turned off in Production.
 - Baskets are stored only in Redis, so Production won't start without it.
 - Put a reverse proxy such as nginx, Caddy, or Traefik in front of the API to terminate TLS.
+- Rate limiting is keyed on the client IP. Behind a proxy, configure forwarded headers. Otherwise every request has the proxy's IP and all clients share one limit.
 
 ---
 
@@ -240,11 +281,15 @@ Before you deploy, note the following:
 
 ## Roadmap
 
-- [ ] SMTP email service for account confirmation and password-reset emails
-- [ ] Rate limiting on authentication endpoints
-- [ ] `/health/live` and `/health/ready` endpoints, plus a Docker `HEALTHCHECK`
+- [x] Rate limiting on authentication endpoints
+- [x] `/health/live` and `/health/ready` endpoints, plus a Docker `HEALTHCHECK`
+- [x] Admin endpoints for product management, using the seeded roles
+- [x] Unit tests and a CI pipeline
+- [ ] SMTP email service for account confirmation and password-reset emails. Right now the reset token is only logged.
+- [ ] Admin endpoints for brands, types, and delivery methods
+- [ ] Admin order management (shipping and delivery status) and a payment provider
+- [ ] Integration tests against a real PostgreSQL instance (Testcontainers)
 - [ ] OpenTelemetry metrics with a Grafana dashboard
-- [ ] Admin endpoints for catalog management, using the seeded roles
 
 ---
 

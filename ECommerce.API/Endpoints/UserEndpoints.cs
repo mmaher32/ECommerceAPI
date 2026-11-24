@@ -3,6 +3,7 @@ using Asp.Versioning.Builder;
 using ECommerce.API.Extensions;
 using ECommerce.API.Filters;
 using ECommerce.API.Models;
+using ECommerce.API.Security;
 using ECommerce.UseCases.Users.Commands.ChangePassword;
 using ECommerce.UseCases.Users.Commands.ForgotPassword;
 using ECommerce.UseCases.Users.Commands.Login;
@@ -40,6 +41,7 @@ public static class UserEndpoints
 
             return result.FromResult(httpContext, "Registered successfully");
         })
+        .RequireRateLimiting(RateLimitPolicies.Auth)
         .WithSummary("Registers a new user")
         .Produces<ApiResponse<AuthResponse>>(StatusCodes.Status200OK)
         .Produces(StatusCodes.Status400BadRequest)
@@ -57,6 +59,7 @@ public static class UserEndpoints
 
             return result.FromResult(httpContext, "Logged in successfully");
         })
+        .RequireRateLimiting(RateLimitPolicies.Auth)
         .WithSummary("Signs a user in")
         .Produces<ApiResponse<AuthResponse>>(StatusCodes.Status200OK)
         .Produces(StatusCodes.Status401Unauthorized);
@@ -72,6 +75,7 @@ public static class UserEndpoints
 
             return result.FromResult(httpContext, "Token refreshed successfully");
         })
+        .RequireRateLimiting(RateLimitPolicies.Auth)
         .WithSummary("Exchanges a refresh token for a new token pair")
         .Produces<ApiResponse<AuthResponse>>(StatusCodes.Status200OK)
         .Produces(StatusCodes.Status401Unauthorized);
@@ -128,6 +132,7 @@ public static class UserEndpoints
             return result.FromResult(httpContext, "Password changed successfully");
         })
         .RequireAuthorization()
+        .RequireRateLimiting(RateLimitPolicies.Auth)
         .WithSummary("Changes the signed-in user's password");
 
         group.MapPost("/forgot-password", async (
@@ -143,6 +148,7 @@ public static class UserEndpoints
                 httpContext,
                 "If that address is registered, a reset link has been sent.");
         })
+        .RequireRateLimiting(RateLimitPolicies.Auth)
         .WithSummary("Starts a password reset")
         .WithDescription("Always succeeds, so the response cannot be used to discover registered addresses.");
 
@@ -158,6 +164,7 @@ public static class UserEndpoints
 
             return result.FromResult(httpContext, "Password reset successfully");
         })
+        .RequireRateLimiting(RateLimitPolicies.Auth)
         .WithSummary("Completes a password reset");
 
         return endpoints;
