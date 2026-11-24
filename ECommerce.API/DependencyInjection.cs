@@ -1,6 +1,12 @@
 using Asp.Versioning;
+using ECommerce.API.Health;
 using ECommerce.API.Middlewares;
+using ECommerce.API.Security;
+using ECommerce.Domain.Constants;
 using ECommerce.Infrastructure.Identity;
+using ECommerce.Infrastructure.Persistence.DbContexts;
+using System.Threading.RateLimiting;
+using Microsoft.AspNetCore.RateLimiting;
 using ECommerce.UseCases.Shared.Settings;
 using ECommerce.UseCases.Users.Commands.Validators;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
@@ -116,8 +122,74 @@ public static class DependencyInjection
                 };
             });
 
-        services.AddAuthorization();
+        services.AddAuthorization(options =>
+        {
+            // Catalog writes. A named policy rather than RequireRole at each endpoint,
+            // so who counts as a catalog admin is decided in exactly one place.
+            options.AddPolicy(AuthorizationPolicies.CatalogAdmin, policy =>
+                policy.RequireRole(Roles.SuperAdmin, Roles.Admin));
+        });
+
+        AddAuthRateLimiting(services, config);
+
+        AddApiHealthChecks(services, config);
 
         return services;
+    }
+
+    private static void AddAuthRateLimiting(IServiceCollection services, IConfiguration config)
+    {
+        var permitLimit = config.GetValue("RateLimiting:Auth:PermitLimit", 10);
+        var windowSeconds = config.GetValue("RateLimiting:Auth:WindowSeconds", 60);
+
+        services.AddRateLimiter(options =>
+        {
+            options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
+
+            options.OnRejected = (context, _) =>
+            {
+                if (context.Lease.TryGetMetadata(MetadataName.RetryAfter, out var retryAfter))
+                {
+                    context.HttpContext.Response.Headers.RetryAfter =
+                        ((int)retryAfter.TotalSeconds).ToString();
+                }
+
+                return ValueTask.CompletedTask;
+            };
+
+            // One window per client IP. Login, register and the password-reset routes
+            // are what an attacker brute-forces, so they share this policy.
+            // Behind a reverse proxy every request has the proxy's IP unless
+            // forwarded headers are configured, which would put all clients in one bucket.
+            options.AddPolicy(RateLimitPolicies.Auth, httpContext =>
+                RateLimitPartition.GetFixedWindowLimiter(
+                    partitionKey: httpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+                    factory: _ => new FixedWindowRateLimiterOptions
+                    {
+                        PermitLimit = permitLimit,
+                        Window = TimeSpan.FromSeconds(windowSeconds),
+                        QueueLimit = 0
+                    }));
+        });
+    }
+
+    private static void AddApiHealthChecks(IServiceCollection services, IConfiguration config)
+    {
+        var checks = services.AddHealthChecks()
+            .AddDbContextCheck<StoreDbContext>(
+                name: "postgres",
+                tags: [HealthCheckTags.Ready]);
+
+        var redisConnection = config.GetConnectionString("Redis")
+            ?? config.GetConnectionString("redis");
+
+        // Only when Redis is configured. In Development without it the basket store
+        // falls back to in-memory HybridCache, and there is nothing to probe.
+        if (!string.IsNullOrWhiteSpace(redisConnection))
+        {
+            checks.AddCheck<DistributedCacheHealthCheck>(
+                "redis",
+                tags: [HealthCheckTags.Ready]);
+        }
     }
 }
